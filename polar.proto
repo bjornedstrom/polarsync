@@ -1,0 +1,8 @@
+message PathName {
+  optional string name = 1;
+  optional int32 type = 2;
+}
+
+message DirectoryTree {
+  repeated PathName path_name = 1;
+}

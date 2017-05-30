@@ -1,0 +1,176 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# Copyright (c) Björn Edström <be@bjrn.se> 2017
+# See LICENSE for details
+#
+# The low level wire format parsing is inspired by v800_downloader by
+# Christian Weber: https://github.com/profanum429/v800_downloader.
+# Here is his copyright header:
+#
+#   Copyright 2014 Christian Weber
+#
+#   This file is part of V800 Downloader.
+#
+#   V800 Downloader is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   (at your option) any later version.
+#
+#   V800 Downloader is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with V800 Downloader.  If not, see <http://www.gnu.org/licenses/>.
+
+import argparse
+import array
+import os
+import os.path
+import struct
+import sys
+import time
+
+import usb.core
+import usb.util
+
+import polar_pb2
+
+
+# From v800_downloader
+def packet_request(request):
+    req = request.encode('utf-8')
+    buf = struct.pack(
+        b'<9B',
+        0x01,
+        (len(req) + 8) << 2,
+        0x00,
+        len(req) + 4,
+        0x00,
+        0x08,
+        0x00,
+        0x12,
+        len(req))
+    buf = b''.join((buf, req))
+    buf += b'\x00'*(64-len(buf))
+    assert len(buf) == 64
+    return buf
+
+
+# From v800_downloader
+def packet_ack(num):
+    return struct.pack(b'<3B', 0x01, 0x05, num) + (b'\x00' * 61)
+
+
+class PolarDevice(object):
+    def __init__(self):
+        self.dev = None
+
+    def connect(self):
+        self.dev = usb.core.find(idVendor=0x0da4, idProduct=0x0008)
+        if self.dev is None:
+            raise ValueError('device not found/connected')
+
+        # XXX: This seems to be necessary, but what are the side effects?
+        self.dev.reset()
+
+        # Setup
+        cfg = self.dev.get_active_configuration()
+        intf = cfg[(0, 0)]
+
+        if self.dev.is_kernel_driver_active(intf.bInterfaceNumber):
+            self.dev.detach_kernel_driver(intf.bInterfaceNumber)
+
+        self.dev.set_configuration()
+
+    # from v800_downloader
+    def send_request(self, request):
+        # Write
+        buf = packet_request(request)
+        assert self.dev.write(1, buf) == len(buf)
+
+        # Read
+        packet_num = 0
+        response = bytearray()
+        while True:
+            resp = self.dev.read(0x81, 64)
+            #print [resp]
+
+            size = (resp[1] >> 2) - 1
+            response += bytearray(resp[3:3+size])
+
+            # End of packet?
+            if not (resp[1] & 0x03 == 1):
+                break
+
+            # Acknowledge read
+            # Note: We do not ack the last packet.
+            ack_buf = packet_ack(packet_num)
+            assert len(ack_buf) == 64
+            self.dev.write(1, ack_buf)
+
+            if packet_num == 0xff:
+                packet_num = 0
+            else:
+                packet_num += 1
+
+        # Strip unnecessary white space
+        if [response[0], response[1], response[-1]] != [0, 0, 0]:
+            print 'WARN: Got garbage bytes in response. Retry program.'
+        #assert response[0] == response[1] == response[-1] == 0
+        response = response[2:-1]
+
+        return response
+
+
+def write_file(root, rel_path, buf):
+    full_path_with_filename = os.path.join(root, rel_path[1:])
+    full_path, filename = os.path.split(full_path_with_filename)
+
+    try:
+        os.makedirs(full_path)
+    except OSError:
+        if not os.path.isdir(full_path):
+            raise
+
+    with open(full_path_with_filename, 'w') as fobj:
+        fobj.write(buf)
+
+
+def read_tree(dev, path, root):
+    if '.' in path:
+        print 'Downloading', path
+        data = dev.send_request(path)
+
+        write_file(root, path, data)
+        return
+
+    resp = dev.send_request(path)
+    paths = polar_pb2.DirectoryTree()
+    paths.ParseFromString(bytes(resp))
+    for p in paths.path_name:
+        read_tree(dev, '%s%s' % (path, p.name), root)
+
+
+def main():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-o', '--output', metavar='PATH', required=True,
+                        help='Output directory to write data')
+    args = parser.parse_args()
+
+    dev = PolarDevice()
+
+    try:
+        dev.connect()
+    except ValueError:
+        print >> sys.stderr, 'ERROR: Device not found. Is it connected to USB?'
+        sys.exit(1)
+
+    read_tree(dev, '/U/0/', os.path.abspath(args.output))
+
+
+main()
