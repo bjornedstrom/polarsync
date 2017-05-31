@@ -37,7 +37,13 @@ import time
 import usb.core
 import usb.util
 
+import google.protobuf
 import polar_pb2
+
+
+USB_VENDOR = 0x0da4
+USB_PRODUCT = 0x0008
+POLAR_ROOT = '/U/0/'
 
 
 # From v800_downloader
@@ -66,11 +72,13 @@ def packet_ack(num):
 
 
 class PolarDevice(object):
-    def __init__(self):
+    def __init__(self, usb_vendor, usb_product):
+        self.usb_vendor = usb_vendor
+        self.usb_product = usb_product
         self.dev = None
 
     def connect(self):
-        self.dev = usb.core.find(idVendor=0x0da4, idProduct=0x0008)
+        self.dev = usb.core.find(idVendor=self.usb_vendor, idProduct=self.usb_product)
         if self.dev is None:
             raise ValueError('device not found/connected')
 
@@ -119,7 +127,9 @@ class PolarDevice(object):
 
         # Strip unnecessary white space
         if [response[0], response[1], response[-1]] != [0, 0, 0]:
-            print 'WARN: Got garbage bytes in response. Retry program.'
+            print 'WARN: Got garbage bytes in response.'
+            raise ValueError('garbage')
+
         #assert response[0] == response[1] == response[-1] == 0
         response = response[2:-1]
 
@@ -140,19 +150,32 @@ def write_file(root, rel_path, buf):
         fobj.write(buf)
 
 
-def read_tree(dev, path, root):
+def read_tree(dev, path, root, overwrite):
     if '.' in path:
+        if (not overwrite) and os.path.exists(os.path.join(root, path[1:])):
+            print 'Skipping', path
+            return
+
+        # TODO: How do we make sure we are not writing garbage data, as in below?
         print 'Downloading', path
         data = dev.send_request(path)
 
         write_file(root, path, data)
         return
 
-    resp = dev.send_request(path)
-    paths = polar_pb2.DirectoryTree()
-    paths.ParseFromString(bytes(resp))
+    for i in range(3):
+        try:
+            resp = dev.send_request(path)
+            paths = polar_pb2.DirectoryTree()
+            paths.ParseFromString(bytes(resp))
+            break
+        except (ValueError, google.protobuf.message.DecodeError, usb.core.USBError), e:
+            print 'WARN: Retrying', path, 'due to', str(e)
+            time.sleep(1)
+            continue
+
     for p in paths.path_name:
-        read_tree(dev, '%s%s' % (path, p.name), root)
+        read_tree(dev, '%s%s' % (path, p.name), root, overwrite)
 
 
 def main():
@@ -160,9 +183,21 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-o', '--output', metavar='PATH', required=True,
                         help='Output directory to write data')
+    parser.add_argument('-n', '--no-overwrite', action='store_true', default=False,
+                        help='Do not overwrite existing files [%(default)s]')
+
+    # Device settings
+    parser.add_argument('--usb-id', metavar='NNNN:NNNN',
+                        default='%04x:%04x' % (USB_VENDOR, USB_PRODUCT),
+                        help='USB vendor:product id [%(default)s]')
     args = parser.parse_args()
 
-    dev = PolarDevice()
+    try:
+        usb_vendor, usb_product = map(lambda n: int(n, 16), args.usb_id.split(':'))
+    except:
+        parser.error('--usb-id on incorret format')
+
+    dev = PolarDevice(usb_vendor, usb_product)
 
     try:
         dev.connect()
@@ -170,7 +205,7 @@ def main():
         print >> sys.stderr, 'ERROR: Device not found. Is it connected to USB?'
         sys.exit(1)
 
-    read_tree(dev, '/U/0/', os.path.abspath(args.output))
+    read_tree(dev, POLAR_ROOT, os.path.abspath(args.output), not args.no_overwrite)
 
 
 main()
