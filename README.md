@@ -4,6 +4,8 @@ Work in progress, a bit buggy.
 
 This program can download data from the Polar M400 watch. It will write the raw outputs to a directory.
 
+You probably want to use https://github.com/bjornedstrom/polarcmd to parse this data.
+
 Known issue: The program sometimes get corrupt data back from the watch during transfer. If this happens, `polarsync` will retry if possible. This works fairly well when the corruption can be detected, however there are cases when corruption may not be detected properly.
 
 ## Build
