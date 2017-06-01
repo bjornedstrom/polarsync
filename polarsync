@@ -38,7 +38,7 @@ import usb.core
 import usb.util
 
 import google.protobuf
-import polar_pb2
+import polartransport_pb2
 
 
 USB_VENDOR = 0x0da4
@@ -166,7 +166,7 @@ def read_tree(dev, path, root, overwrite):
     for i in range(3):
         try:
             resp = dev.send_request(path)
-            paths = polar_pb2.DirectoryTree()
+            paths = polartransport_pb2.DirectoryTree()
             paths.ParseFromString(bytes(resp))
             break
         except (ValueError, google.protobuf.message.DecodeError, usb.core.USBError), e:

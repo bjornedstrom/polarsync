@@ -10,7 +10,7 @@ Known issue: The program sometimes get corrupt data back from the watch during t
 
 Requires `pyusb`.
 
-    protoc --python_out=. polar.proto
+    protoc --python_out=. polartransport.proto
 
 ## Install
 
